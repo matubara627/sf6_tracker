@@ -41,10 +41,15 @@ export async function GET(request: NextRequest) {
       timeout: 60000 
     });
 
-    // 2. 検索ボックスへの入力
+    // 2. 検索ボタン（虫眼鏡アイコンなど）をクリックして検索バーを開く
+    // ※ページのデザインによっては最初から開いている場合もありますが、念のため検索ボックスを探します
     console.log("🔍 検索ボックスを探しています...");
+    
+    // 検索入力欄に入力
     const inputResult = await page.evaluate((targetName) => {
+      // プレースホルダーや種類で入力欄を探す
       const inputs = Array.from(document.querySelectorAll('input[type="text"]'));
+      // "Fighter ID" や "Search" っぽい入力欄を探す
       const searchInput = inputs.find(el => {
         const p = el.getAttribute('placeholder') || "";
         return p.includes("ID") || p.includes("Fighter") || p.includes("検索");
@@ -52,6 +57,7 @@ export async function GET(request: NextRequest) {
 
       if (searchInput) {
         searchInput.value = targetName;
+        // Reactなどのイベントを発火させる
         searchInput.dispatchEvent(new Event('input', { bubbles: true }));
         return true;
       }
@@ -63,53 +69,42 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "検索ボックスが見つかりませんでした" }, { status: 404 });
     }
 
-    // 3. 検索実行
+    // 3. 検索実行（Enterキー、または検索ボタン押下）
     console.log("🖱️ 検索を実行します...");
     await page.keyboard.press('Enter');
     
-    // 結果が出るのを待つ
+    // 検索結果が出るのを待つ
     await new Promise(r => setTimeout(r, 4000));
 
-    // 4. ★変更点: 結果リストを「すべて」取得する
-    console.log("📋 検索結果リストを取得します...");
-    
-    const players = await page.evaluate(() => {
-      // 検索結果のリストアイテムを探す (liタグの中に a href="/profile/..." がある構造)
-      const listItems = Array.from(document.querySelectorAll('li'));
-      const results: { name: string, userCode: string, info: string }[] = [];
-
-      listItems.forEach(li => {
-        const link = li.querySelector('a[href*="/profile/"]');
-        if (link) {
-          const href = link.getAttribute('href') || "";
-          const match = href.match(/\/profile\/(\d+)$/);
-          
-          if (match) {
-            // 名前を取得 (タグ構造は不明だが、リンク内のテキストを拾えばOK)
-            // 必要に応じて img の alt属性や特定のクラス名から拾うとより精度が上がります
-            let name = link.textContent?.trim() || "Unknown";
-            // 余計な改行などを整理
-            name = name.replace(/\s+/g, ' '); 
-
-            // 追加情報（リーグランクなどがあれば拾う）
-            const info = li.innerText.replace(/\s+/g, ' ').substring(0, 50); // 補足情報として少しテキストを保持
-
-            results.push({
-              name: name,
-              userCode: match[1], // URLから数字IDを抽出
-              info: info
-            });
-          }
-        }
-      });
+    // 4. 結果リストの一番上を取得
+    const userCode = await page.evaluate(() => {
+      // 検索結果のリスト（li）を探す
+      // クラス名は不明だが、fighters_list みたいな場所にあるはず
+      const links = Array.from(document.querySelectorAll('a'));
       
-      return results;
+      // リンク先が "/profile/数字" になっているものを探す
+      const profileLink = links.find(a => {
+        const href = a.getAttribute('href') || "";
+        // /profile/1234567890 のような形式
+        return href.match(/\/profile\/\d+$/);
+      });
+
+      if (profileLink) {
+        const href = profileLink.getAttribute('href') || "";
+        const match = href.match(/\/profile\/(\d+)$/);
+        return match ? match[1] : null;
+      }
+      return null;
     });
 
     await browser.close();
 
-    console.log(`✅ ${players.length}件のプレイヤーが見つかりました`);
-    return NextResponse.json({ players });
+    if (userCode) {
+      console.log(`✅ ID発見: ${userCode}`);
+      return NextResponse.json({ userCode });
+    } else {
+      return NextResponse.json({ error: "プレイヤーが見つかりませんでした" }, { status: 404 });
+    }
 
   } catch (error: any) {
     console.error("Error:", error);

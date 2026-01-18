@@ -90,6 +90,9 @@ export async function GET(request: NextRequest) {
         const rateEl = li.querySelector('[class*="winning_rate_rate"]');
         const grafEl = li.querySelector('[class*="winning_rate_graf"]');
         
+        // ★追加: アイコン画像の取得
+        const imgEl = li.querySelector('img');
+        
         if (nameEl) {
           const name = nameEl.textContent?.trim();
           if (!name || name === "ALL") return;
@@ -119,10 +122,22 @@ export async function GET(request: NextRequest) {
             }
           }
 
+          // ★追加: アイコンURLの処理
+          let icon = "";
+          if (imgEl) {
+            const src = imgEl.getAttribute('src') || "";
+            if (src.startsWith('/')) {
+              icon = `https://www.streetfighter.com${src}`;
+            } else {
+              icon = src;
+            }
+          }
+
           list.push({
             opponent: name,
             count: count,
-            rate: rate
+            rate: rate,
+            icon: icon // ★データを追加
           });
         }
       });
@@ -141,6 +156,7 @@ export async function GET(request: NextRequest) {
 }
 
 // ★修正版: キャラクター選択処理（選択して「変更する」を押す）
+// ★修正版: 以前のコードをベースに、2文字キャラ（ED, JP）用の分岐を追加
 async function selectCharacter(page: any, targetName: string) {
   // A. プルダウン（モーダル）を開く
   const openResult = await page.evaluate(() => {
@@ -157,15 +173,38 @@ async function selectCharacter(page: any, targetName: string) {
   // モーダルが開くのを待つ
   await new Promise(r => setTimeout(r, 1000));
     
-  // B. キャラを選んでクリック（青枠にする）
+  // B. キャラを選んでクリック
   const charSelected = await page.evaluate((name: string) => {
+    // 文字を比較しやすくする関数（アルファベットと数字以外を削除して大文字化）
+    // 例: "J.P." -> "JP", "Luke" -> "LUKE"
+    const normalize = (str: string) => str.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    
+    const targetClean = normalize(name); // 検索したい名前
+
     const allElements = Array.from(document.querySelectorAll('li, span, div')) as HTMLElement[];
+    
     const targetEl = allElements.find(el => {
-      const t = el.textContent?.trim().toUpperCase() || "";
-      const n = name.toUpperCase();
-      // 完全一致 または "GOUKI (Classic)" のような前方一致
-      return (t === n || (t.includes(n) && t.length < n.length + 10)) && 
-             el.offsetParent !== null;
+      // 要素が見えていない場合は除外
+      if (el.offsetParent === null) return false;
+
+      const textRaw = el.textContent || "";
+      const textClean = normalize(textRaw); // 画面上の名前
+
+      if (!textClean) return false;
+
+      // ▼▼▼ ここで分岐させます ▼▼▼
+
+      if (targetClean.length <= 2) {
+        // ★パターン1: 名前が2文字以下の場合 (ED, JP)
+        // 「完全一致」のみを許可します。
+        // これにより "RANKED" (EDを含む) や "JA-JP" (JPを含む) を弾きます。
+        return textClean === targetClean;
+      } else {
+        // ★パターン2: 名前が3文字以上の場合 (LUKE, RYU, ZANGIEF...)
+        // 以前ご提示いただいた「元のロジック」を使用します。
+        // "includes" を使うことで、多少の表記揺れがあってもヒットさせます。
+        return textClean.includes(targetClean) && textClean.length < targetClean.length + 10;
+      }
     });
 
     if (targetEl) {
@@ -176,37 +215,40 @@ async function selectCharacter(page: any, targetName: string) {
   }, targetName);
 
   if (!charSelected) {
-    console.log("⚠️ モーダル内でキャラクターが見つかりませんでした");
+    console.log(`⚠️ モーダル内でキャラクター "${targetName}" が見つかりませんでした`);
     return false;
   }
 
   // 少し待つ（選択状態の反映）
   await new Promise(r => setTimeout(r, 500));
 
-  // C. 【重要】「変更する」ボタンを押す
+  // C. 「変更する」ボタンを押す
   console.log("🖱️ 「変更する」ボタンを探して押します...");
-  const confirmClicked = await page.evaluate(() => {
-    // ボタン、div、aタグなどの中から「変更する」というテキストを持つものを探す
-    const allElements = Array.from(document.querySelectorAll('button, div, a, span')) as HTMLElement[];
-    const confirmBtn = allElements.find(el => 
-      el.textContent?.trim() === '変更する' && 
-      el.offsetParent !== null // 見えているものだけ
-    );
+  try {
+    const confirmClicked = await page.evaluate(() => {
+      const allElements = Array.from(document.querySelectorAll('button, div, a, span')) as HTMLElement[];
+      const confirmBtn = allElements.find(el => 
+        el.textContent?.trim() === '変更する' && 
+        el.offsetParent !== null
+      );
 
-    if (confirmBtn) {
-      confirmBtn.click();
+      if (confirmBtn) {
+        confirmBtn.click();
+        return true;
+      }
+      return false;
+    });
+
+    if (confirmClicked) {
+      console.log("⏳ 変更ボタン押下。データ更新を待ちます...");
+      await new Promise(r => setTimeout(r, 5000));
       return true;
+    } else {
+      console.error("❌ 「変更する」ボタンが見つかりませんでした！");
+      return false;
     }
-    return false;
-  });
-
-  if (confirmClicked) {
-    // D. 画面が切り替わるのを待つ
-    console.log("⏳ 変更ボタン押下。データ更新を待ちます...");
-    await new Promise(r => setTimeout(r, 4000));
-    return true;
-  } else {
-    console.error("❌ 「変更する」ボタンが見つかりませんでした！");
+  } catch (e) {
+    console.error("⚠️ ボタン押下エラー:", e);
     return false;
   }
 }
